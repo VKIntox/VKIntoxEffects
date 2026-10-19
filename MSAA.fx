@@ -1,16 +1,16 @@
 /*
-    MSAA.fx — iterative directional anti-aliasing.
+    MSAA.fx — directional anti-aliasing, one pass.
 
-    A post-process (image-space) filter, not hardware multisampling. Every pass
-    measures the luminance spread around each pixel and blends the pixels that
-    sit on an edge along the edge's own direction, where the staircase steps
-    are. The technique runs the pass eight times, so one application only has
-    to soften an edge a little; repeating it converges on a smooth ramp with no
-    long per-pixel searches.
+    A post-process (image-space) filter, not hardware multisampling. It
+    measures the luminance spread around each pixel, leaves flat areas alone,
+    and blends the pixels that sit on an edge along the edge's own direction,
+    which is where the staircase steps are. Five texture reads per pixel, most
+    of them on flat pixels that come back unchanged.
 
-    Each pass costs five texture reads on flat pixels (most of the screen, and
-    they stay untouched) and the same on edges, so eight passes stay cheaper
-    than one pass of the search-based version this replaces.
+    One application is a complete anti-aliasing pass. For more smoothing, add
+    the effect again from VKIntox's effects list (the duplicate stepper on the
+    effects row); each extra copy softens the edges a little further, and the
+    blend strength is worth lowering when stacking several.
 */
 
 #include "ReShade.fxh"
@@ -30,10 +30,10 @@ uniform float BlendStrength <
     ui_type = "slider";
     ui_min = 0.05; ui_max = 1.00; ui_step = 0.01;
     ui_tooltip =
-        "How much of the smoothed colour each pass mixes in.\n"
-        "With the pass repeating eight times, low values are safe: 0.35\n"
-        "converges to near-full blending. Higher is faster but blunter.";
-> = 0.35;
+        "How much of the smoothed colour is mixed in.\n"
+        "1.0 is a full blend in this one pass. Lower it when you stack\n"
+        "several copies of the effect.";
+> = 1.00;
 
 float MSAALuma(float3 color)
 {
@@ -87,19 +87,11 @@ float3 PS_MSAA(float4 position : SV_Position, float2 texcoord : TEXCOORD) : SV_T
 technique MSAA <
     ui_label = "MSAA (post-process)";
     ui_tooltip =
-        "Image-space anti-aliasing in eight passes. Each pass measures the\n"
-        "luminance spread around every pixel and blends edges along their own\n"
+        "Image-space anti-aliasing in a single pass. Measures the luminance\n"
+        "spread around every pixel and blends edges along their own\n"
         "direction, so staircases soften while flat areas cost nothing.\n"
-        "Raise the threshold to catch more edges; raise the strength for a\n"
-        "blunter, faster result.";
+        "Add the effect again for more smoothing.";
 >
 {
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
-    pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
     pass { VertexShader = PostProcessVS; PixelShader = PS_MSAA; }
 }
