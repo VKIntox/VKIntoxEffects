@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-26.04
+    steps:
+      # the compiler lives in the layer's repo; checking out both validates
+      # every effect against exactly the dialect it ships with
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: VKIntox/VKIntox
+          path: vkintox
+          submodules: recursive
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: effects
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            clang \
+            glslang-tools \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxtst-dev \
+            meson \
+            pkg-config \
+            spirv-headers \
+            wayland-protocols
+
+      - name: Build the shader compiler
+        working-directory: vkintox
+        run: |
+          CC=clang CXX=clang++ meson setup --buildtype=release build
+          meson compile -C build vkintox-shader-check
+
+      - name: Compile every effect
+        run: >
+          python3 vkintox/src/tests/test_reshade_shaders.py
+          --shader-check vkintox/build/src/vkintox-shader-check
+          --shader-dir effects
+          --include vkintox/src/tests/fixtures
