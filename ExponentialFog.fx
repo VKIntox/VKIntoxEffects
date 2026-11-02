@@ -1,17 +1,5 @@
 /*
-    ExponentialFog.fx — exponential height fog.
-
-    Linearizes the depth buffer with ReShade's depth input settings so it is
-    correct across APIs, including Vulkan, then fades a coloured fog in with
-    distance and screen height. Pixels at the far plane are treated as skybox
-    and left alone.
-
-    Aliased silhouettes get worse once distance fog is mixed in, because the
-    fog turns every staircase step into a colour step too. With anti-aliasing
-    on, a directional blend softens edges before the fog is applied, so the
-    fog lands on a clean image.
-
-    Needs ReShade 4.4+ and a detected depth buffer.
+    ExponentialFog.fx - exponential and height-based fog.
 */
 
 #include "ReShade.fxh"

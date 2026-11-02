@@ -1,16 +1,5 @@
 /*
-    MSAA.fx — directional anti-aliasing, one pass.
-
-    A post-process (image-space) filter, not hardware multisampling. It
-    measures the luminance spread around each pixel, leaves flat areas alone,
-    and blends the pixels that sit on an edge along the edge's own direction,
-    which is where the staircase steps are. Five texture reads per pixel, most
-    of them on flat pixels that come back unchanged.
-
-    One application is a complete anti-aliasing pass. For more smoothing, add
-    the effect again from VKIntox's effects list (the duplicate stepper on the
-    effects row); each extra copy softens the edges a little further, and the
-    blend strength is worth lowering when stacking several.
+    MSAA.fx - one-pass directional anti-aliasing
 */
 
 #include "ReShade.fxh"
