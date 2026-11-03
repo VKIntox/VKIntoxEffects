@@ -70,6 +70,16 @@ uniform float SSR_JITTER <
     ui_category = "Ray Tracing";
 > = 0.25;
 
+uniform float SSR_RENDER_SCALE <
+    ui_type = "drag";
+    ui_label = "Render size scale";
+    ui_min = 0.25; ui_max = 2.00;
+    ui_tooltip = "Resolution factor for the reflection buffers. Lower values\n"
+                 "cut the ray-march cost substantially; the error smoothing\n"
+                 "below hides the reduced detail. Above 1 supersamples.";
+    ui_category = "Global";
+> = 1.0;
+
 uniform float SSR_FILTER_RADIUS <
     ui_type = "drag";
     ui_min = 0.0; ui_max = 5.00;
@@ -78,6 +88,44 @@ uniform float SSR_FILTER_RADIUS <
                  "reflection more and lose fine detail.";
     ui_category = "Filtering and Details";
 > = 0.5;
+
+uniform float SSR_SMOOTHEN <
+    ui_type = "drag";
+    ui_label = "Smoothen";
+    ui_min = 0.00; ui_max = 2.00;
+    ui_tooltip = "Widens the reflection filter. Raise it together with a low\n"
+                 "render size scale to remove the blocky upscale.";
+    ui_category = "Filtering and Details";
+> = 0.5;
+
+uniform float SSR_ERROR_SENSITIVITY <
+    ui_type = "drag";
+    ui_label = "Error sensitivity";
+    ui_min = 0.00; ui_max = 20.00;
+    ui_tooltip = "How readily a reflection sample counts as errored. Samples\n"
+                 "with low confidence (missed or grazing rays) are blurred\n"
+                 "more as this rises.";
+    ui_category = "Filtering and Details";
+> = 4.0;
+
+uniform float SSR_ERROR_INTENSITY <
+    ui_type = "drag";
+    ui_label = "Error smoothing";
+    ui_min = 0.00; ui_max = 1.00;
+    ui_tooltip = "Extra blur applied only to errored reflection samples.\n"
+                 "Zero leaves the ordinary filter behaviour untouched.";
+    ui_category = "Filtering and Details";
+> = 0.5;
+
+uniform float SSR_EDGE_FADE <
+    ui_type = "drag";
+    ui_label = "Edge fade";
+    ui_min = 0.00; ui_max = 1.00;
+    ui_tooltip = "Fades reflections out at full-resolution depth edges. This\n"
+                 "hides the blocky silhouette left by a scaled reflection\n"
+                 "buffer without blurring the whole image.";
+    ui_category = "Filtering and Details";
+> = 1.0;
 
 uniform float SSR_RELIEF_STRENGTH <
     ui_type = "drag";
@@ -324,7 +372,8 @@ float SSRBlurWeight(in SSRBlurData center, in SSRBlurData tap)
 {
     float depth_term = saturate(1 - abs(tap.mask.w - center.mask.w) * 50);
     float normal_term = saturate(dot(tap.mask.xyz, center.mask.xyz) * 50 - 49);
-    return depth_term * normal_term;
+    float error_term = saturate(1 - abs(tap.key.w - center.key.w) * (1.0 + SSR_ERROR_SENSITIVITY));
+    return depth_term * normal_term * error_term;
 }
 
 float4 SSRBlur(in SSRVertOut i, in sampler inputsampler, in float radius, in float2 axis)
@@ -334,9 +383,10 @@ float4 SSRBlur(in SSRVertOut i, in sampler inputsampler, in float radius, in flo
     SSRBlurData center, tap;
     SSRBlurFetch(center, inputsampler, blur_uv);
 
-    if (SSR_FILTER_RADIUS == 0) return center.key;
+    if (SSR_FILTER_RADIUS == 0 && SSR_SMOOTHEN == 0 && SSR_ERROR_INTENSITY == 0) return center.key;
 
-    float kernel_size = radius;
+    float error = 1.0 - saturate(center.key.w * SSR_ERROR_SENSITIVITY);
+    float kernel_size = max(radius * (1.0 + SSR_SMOOTHEN), radius + error * SSR_ERROR_INTENSITY * 4.0);
     float k = -2.0 * rcp(kernel_size * kernel_size + 1e-3);
 
     float4 blursum = 0;
@@ -359,7 +409,38 @@ float4 SSRBlur(in SSRVertOut i, in sampler inputsampler, in float radius, in flo
     blursum /= blursum_weight;
     blursum_noweight /= blursum_noweight_weight;
 
-    return lerp(center.key, blursum, saturate(blursum_weight * 2));
+    float blend = saturate(blursum_weight * 2 * (1.0 + error * SSR_ERROR_INTENSITY * 2.0));
+    return lerp(center.key, blursum, blend);
+}
+
+float4 SSRGlobalBlur(in SSRVertOut i, float4 center)
+{
+    if (SSR_RENDER_SCALE >= 1.0) return center;
+
+    float radius = max(1.0, 1.0 / max(SSR_RENDER_SCALE, 0.25));
+    float2 step = Intox::PIXEL_SIZE * radius;
+    float4 sum = center;
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + float2( step.x, 0.0), 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + float2(-step.x, 0.0), 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + float2(0.0,  step.y), 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + float2(0.0, -step.y), 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + step, 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv - step, 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + float2( step.x, -step.y), 0, 0));
+    sum += tex2Dlod(sSSR_ColorTex, float4(i.uv + float2(-step.x,  step.y), 0, 0));
+    return sum / 9.0;
+}
+
+float SSREdgeFade(float2 uv)
+{
+    float depth = Intox::linear_depth(uv);
+    float2 px = Intox::PIXEL_SIZE;
+    float dx = max(abs(Intox::linear_depth(uv + float2(px.x, 0.0)) - depth),
+                   abs(Intox::linear_depth(uv - float2(px.x, 0.0)) - depth));
+    float dy = max(abs(Intox::linear_depth(uv + float2(0.0, px.y)) - depth),
+                   abs(Intox::linear_depth(uv - float2(0.0, px.y)) - depth));
+    float edge = smoothstep(0.002, 0.02, max(dx, dy));
+    return lerp(1.0, 1.0 - edge, SSR_EDGE_FADE);
 }
 
 void PS_FilterHorizontal(in SSRVertOut i, out float4 o : SV_Target0)
@@ -370,12 +451,13 @@ void PS_FilterHorizontal(in SSRVertOut i, out float4 o : SV_Target0)
 void PS_FilterVertical(in SSRVertOut i, out float4 o : SV_Target0)
 {
     float4 reflection = SSRBlur(i, sSSR_ColorTex, SSR_FILTER_RADIUS, float2(1, 0) * Intox::PIXEL_SIZE);
+    reflection = SSRGlobalBlur(i, reflection);
     float alpha = reflection.w;
 
     float fade = saturate(1 - Intox::linear_depth(i.uv) / SSR_FADE_DISTANCE);
     o = tex2D(Intox::sBackBufferTex, i.uv);
 
-    o.rgb = lerp(o.rgb, reflection.rgb, alpha * fade);
+    o.rgb = lerp(o.rgb, reflection.rgb, alpha * fade * SSREdgeFade(i.uv));
 }
 
 technique IntoxSSR <
