@@ -48,9 +48,10 @@ uniform float MXAO_RADIUS <
     uniform float MXAO_NORMAL_BIAS <
         ui_type = "drag";
         ui_min = 0.0; ui_max = 0.8;
-        ui_label = "Normal bias";
+        ui_label = "Smoothen";
         ui_tooltip = "Bias of the occlusion cone. Raises the threshold that\n"
-                     "keeps nearly parallel surfaces from shading themselves.";
+                     "keeps nearly parallel surfaces from shading themselves.\n"
+                     "Higher values smooth away contact shading and noise.";
         ui_category = "Global";
     > = 0.2;
 #else
@@ -60,11 +61,21 @@ uniform float MXAO_RADIUS <
 uniform float MXAO_RENDER_SCALE <
     ui_type = "drag";
     ui_label = "Render size scale";
-    ui_min = 0.50; ui_max = 1.00;
-    ui_tooltip = "Resolution factor for the effect. Lower values cut the cost\n"
-                 "substantially but soften the result.\n"
-                 "1.0 computes at full resolution,\n"
-                 "0.5 at half width and half height.";
+    ui_min = 0.25; ui_max = 2.00;
+    ui_tooltip = "Resolution factor for the occlusion buffers. Lower values cut\n"
+                 "the cost substantially but soften the result. Values below\n"
+                 "1 render at a lower resolution, above 1 supersample.\n"
+                 "0.5 computes at half width and half height.";
+    ui_category = "Global";
+> = 1.0;
+
+uniform float MXAO_EDGE_FADE <
+    ui_type = "drag";
+    ui_label = "Edge fade";
+    ui_min = 0.00; ui_max = 1.00;
+    ui_tooltip = "Fades occlusion out at full-resolution depth edges. This\n"
+                 "hides the blocky silhouette left by a scaled occlusion\n"
+                 "buffer without softening the whole image.";
     ui_category = "Global";
 > = 1.0;
 
@@ -164,6 +175,7 @@ uniform int MXAO_DEBUG_VIEW <
 texture2D MXAO_ColorTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA8; MipLevels = 3+MXAO_MIP_IL; };
 texture2D MXAO_DepthTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F; MipLevels = 3+MXAO_MIP_AO; };
 texture2D MXAO_NormalTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RGBA8; MipLevels = 3+MXAO_MIP_IL; };
+texture2D MXAO_MaskTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
 
 sampler2D sMXAO_ColorTex { Texture = MXAO_ColorTex; };
 sampler2D sMXAO_DepthTex { Texture = MXAO_DepthTex; };
@@ -196,7 +208,7 @@ MXAOVertOut VS_MXAO(in uint id : SV_VertexID)
 
     o.uv.x = (id == 2) ? 2.0 : 0.0;
     o.uv.y = (id == 1) ? 2.0 : 0.0;
-    o.uv.zw = o.uv.xy / MXAO_RENDER_SCALE;
+    o.uv.zw = o.uv.xy;
     o.vpos = float4(o.uv.xy * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
 
     static const int sample_counts[8] = {4, 8, 16, 24, 32, 64, 255, 8};
@@ -352,10 +364,8 @@ void PS_SetupInputs(in MXAOVertOut i, out float4 color : SV_Target0, out float4 
 
 void PS_MarkPixels(in MXAOVertOut i, out float4 color : SV_Target0)
 {
-    if (Intox::linear_depth(i.uv.zw) >= MXAO_FADE_END
-        || 0.25 * 0.5 * MXAO_RADIUS / (tex2D(sMXAO_DepthTex, i.uv.zw).x + 2.0) * BUFFER_HEIGHT < 1.0
-        || i.uv.z > 1.0
-        || i.uv.w > 1.0)
+    if (Intox::linear_depth(i.uv.xy) >= MXAO_FADE_END
+        || 0.25 * 0.5 * MXAO_RADIUS / (tex2D(sMXAO_DepthTex, i.uv.xy).x + 2.0) * BUFFER_HEIGHT < 1.0)
         discard;
 
     color = 1.0;
@@ -558,16 +568,48 @@ void PS_ObscuranceHQ(in MXAOVertOut i, out float4 color : SV_Target0)
 #endif
 }
 
+float4 MXAOGlobalBlur(in MXAOVertOut i, float4 center)
+{
+    if (MXAO_RENDER_SCALE >= 1.0) return center;
+
+    float radius = max(1.0, 1.0 / max(MXAO_RENDER_SCALE, 0.25));
+    float2 step = Intox::PIXEL_SIZE * radius;
+    float4 sum = center;
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + float2( step.x, 0.0), 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + float2(-step.x, 0.0), 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + float2(0.0,  step.y), 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + float2(0.0, -step.y), 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + step, 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy - step, 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + float2( step.x, -step.y), 0, 0));
+    sum += tex2Dlod(sCommonTex1, float4(i.uv.xy + float2(-step.x,  step.y), 0, 0));
+    return sum / 9.0;
+}
+
+float MXAOEdgeFade(float2 uv)
+{
+    float depth = Intox::linear_depth(uv);
+    float2 px = Intox::PIXEL_SIZE;
+    float dx = max(abs(Intox::linear_depth(uv + float2(px.x, 0.0)) - depth),
+                   abs(Intox::linear_depth(uv - float2(px.x, 0.0)) - depth));
+    float dy = max(abs(Intox::linear_depth(uv + float2(0.0, px.y)) - depth),
+                   abs(Intox::linear_depth(uv - float2(0.0, px.y)) - depth));
+    float edge = smoothstep(0.002, 0.02, max(dx, dy));
+    return lerp(1.0, 1.0 - edge, MXAO_EDGE_FADE);
+}
+
 void PS_SpatialFilter1(in MXAOVertOut i, out float4 color : SV_Target0)
 {
-    color = MXAOBlur(i, sCommonTex0, MXAO_RENDER_SCALE, 0.75, 4);
+    color = MXAOBlur(i, sCommonTex0, 1.0, 0.75, 4);
 }
 
 void PS_SpatialFilter2(in MXAOVertOut i, out float4 color : SV_Target0)
 {
-    float4 ssil_ssao = MXAOBlur(i, sCommonTex1, 1, 1.0 / MXAO_RENDER_SCALE, 8);
+    float4 ssil_ssao = MXAOBlur(i, sCommonTex1, 1.0, 1.0, 8);
+    ssil_ssao = MXAOGlobalBlur(i, ssil_ssao);
     ssil_ssao *= ssil_ssao;
-    color = tex2D(sMXAO_ColorTex, i.uv.xy);
+    ssil_ssao *= MXAOEdgeFade(i.uv.xy);
+    color = tex2D(Intox::sBackBufferTex, i.uv.xy);
 
     static const float3 lumcoeff = float3(0.2126, 0.7152, 0.0722);
     float scenedepth = Intox::linear_depth(i.uv.xy);
@@ -643,6 +685,7 @@ technique IntoxMXAO <
     {
         VertexShader = VS_MXAO;
         PixelShader = PS_MarkPixels;
+        RenderTarget = MXAO_MaskTex;
         ClearRenderTargets = true;
         StencilEnable = true;
         StencilPass = REPLACE;
