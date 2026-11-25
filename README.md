@@ -15,7 +15,7 @@ packages you install.
 ## writing effects for VKIntox
 
 - effects are compiled by the compiler that lives in
-  [VKIntox](https://github.com/VKIntox/VKIntox) under `src/vendor/reshade`;
+  [VKIntox](https://git.buwryy.net/VKIntox/VKIntox) under `src/vendor/reshade`;
   that is the dialect to target
 - `ReShade.fxh` is provided by the compiler itself; no other include is
   available at runtime, so an effect has to be self-contained
