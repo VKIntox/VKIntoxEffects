@@ -1,5 +1,7 @@
 # VKIntoxEffects
 
+[![CI](https://github.com/VKIntox/VKIntoxEffects/actions/workflows/ci.yml/badge.svg?branch=main&style=flat-square)](https://github.com/VKIntox/VKIntoxEffects/actions/workflows/ci.yml)
+
 The effect shaders VKIntox ships with, in their own repo so they can move and
 be contributed to without touching the layer.
 
